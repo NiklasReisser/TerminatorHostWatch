@@ -9,7 +9,7 @@ if [ $# -eq 0 ]
 then
   echo installing to default location: $DEFAULT
   {
-          echo attempting install...  
+          echo attempting install...
 	  install -D $PLUGIN_FILE $DEFAULT
   } || {
 	  echo falling back to userland install since no sudo.
@@ -17,7 +17,6 @@ then
           install -D $PLUGIN_FILE $FALLBACK
   }
 else
-  echo installing to $1     	
-  install -D $PLUGIN_FILE $1 
-fi 
-
+  echo installing to $1
+  install -D $PLUGIN_FILE $1
+fi
