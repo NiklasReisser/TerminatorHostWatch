@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #
 # HostWatch Terminator Plugin
-# Copyright (C) 2015 GratefulTony & Philipp C. Heckel
+# Copyright (C) 2015 GratefulTony & Philipp C. Heckel & Niklas Reisser
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -20,10 +20,15 @@
 import re
 from collections import OrderedDict
 
+import gi
+from gi.repository import GObject, Vte
+
 import terminatorlib.plugin as plugin
 from terminatorlib.util import dbg
 from terminatorlib.terminator import Terminator
+from terminatorlib.terminal import Terminal
 from terminatorlib.config import Config
+
 
 # Every plugin you want Terminator to load *must* be listed in 'AVAILABLE'
 # This is inside this try so we only make the plugin available if pynotify
@@ -31,35 +36,52 @@ from terminatorlib.config import Config
 AVAILABLE = ['HostWatch']
 
 class HostWatch(plugin.Plugin):
-    dbg("loading HostWatch")
-    watches = {}
-    config = {}
-    profile_mappings = OrderedDict()
+    config : dict
+    last_profiles : dict
+    patterns : list
+    profile_mappings : OrderedDict
+    prompt_minlen : int
+    watches : set
+    fallback_profile = 'default'
     capabilities = ['host_watch']
-    patterns = []
-    prompt_minlen = 0
-    failback_profile = 'default'
-    AVAILABLE = ['HostWatch']
-
 
     def __init__(self):
+        dbg("loading HostWatch")
         self.config = Config().plugin_get_config(self.__class__.__name__)
-        self.watches = {}
-        self.prompt_minlen = int(self.get_prompt_minlen())
-        self.failback_profile = self.get_failback()
         self.last_profiles = {}
+        self.patterns = []
+        self.profile_mappings = OrderedDict()
+        self.prompt_minlen = int(self.get_prompt_minlen())
+        self.watches = set()
+        self.fallback_profile = self.get_fallback()
         self.load_patterns()
         self.load_profile_mappings()
         self.update_watches()
 
 
-    def update_watches(self):
+    def update_watches(self) -> None:
         """ (re)register for signals """
+        new_watches = set()
         for terminal in Terminator().terminals:
+            new_watches.add(terminal)
             if terminal not in self.watches:
-                self.watches[terminal] = terminal.get_vte().connect('contents-changed', self.on_contents_changed, terminal)
+                vte = terminal.get_vte()
+                terminal.connect('focus-out', self.update_watches_delayed, None)
+                vte.connect('focus-out-event', self.update_watches_delayed, None)
+                vte.connect('contents-changed', self.on_contents_changed, terminal)
+        self.watches = new_watches
 
-    def get_hostname(self, last_lines):
+
+    def update_watches_delayed(self, term, event, arg1 = None) -> bool:
+        """ (re)register for signals, but later"""
+        def add_watch(self):
+            self.update_watches()
+            return False
+        GObject.idle_add(add_watch, self)
+        return True
+
+
+    def get_hostname(self, last_lines: str) -> str|None:
         """Check if a hostname is found in the last lines"""
         for prompt_pattern in self.patterns:
             match = prompt_pattern.match(last_lines)
@@ -73,7 +95,7 @@ class HostWatch(plugin.Plugin):
         return None
 
 
-    def get_most_approbriate_profile(self, hostname: str):
+    def get_most_approbriate_profile(self, hostname: str) -> str:
         """Get a profile for a hostname"""
         # since dict is ordered, iterate regexp/mapping, then profiles
         for profile_pattern, profile in self.profile_mappings.items():
@@ -81,18 +103,19 @@ class HostWatch(plugin.Plugin):
             if hostname == profile or profile_pattern.match(hostname):
                 dbg(f"matching profile '{profile}' found for {hostname}:")
                 return profile
-        return self.failback_profile
+        return self.fallback_profile
 
 
-    def apply_profile(self, terminal, profile: str):
+    def apply_profile(self, terminal : Terminal, profile: str) -> None:
         """Set a given profile"""
         # avoid re-applying profile if no change
-        if terminal not in self.last_profiles or profile != self.last_profiles[terminal]: # disabled this check, profile wasnt updating for multiple splits. todo: revisit.
+        if terminal not in self.last_profiles or profile != self.last_profiles[terminal]:
             dbg(f"setting profile {profile}")
             terminal.set_profile(None, profile, False)
             self.last_profiles[terminal] = profile
 
-    def on_contents_changed(self, vte, terminal):
+
+    def on_contents_changed(self, vte : Vte, terminal : Terminal) -> bool:
         """ Called when the visible content in the terminal changes (which is often)"""
         self.update_watches()
 
@@ -119,10 +142,8 @@ class HostWatch(plugin.Plugin):
         return True
 
 
-    def get_last_lines(self, vte, count):
-        """Retrieve last line of terminal (contains 'user@hostname')"""
-        # vte = terminal.get_vte()
-
+    def get_last_lines(self, vte : Vte, count):
+        """Retrieve the last n lines of terminal output (contains 'user@hostname')"""
         cursor = vte.get_cursor_position()
         column_count = vte.get_column_count()
         row_position = cursor[1]
@@ -163,8 +184,8 @@ class HostWatch(plugin.Plugin):
         return 3
 
 
-    def get_failback(self):
-        """ failback profile, applies if profile not found. """
+    def get_fallback(self):
+        """ fallback profile, applies if profile not found. """
         if self.config and 'failback_profile' in self.config:
             return self.config['failback_profile']
         return 'default'
